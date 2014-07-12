@@ -166,11 +166,12 @@ func info(format string, args ...interface{}) {
 
 func startSocksServer(ip string) {
 	// start socks server
-	socksServer, err := socks.New(ip + ":1080")
+	addr := ip + ":1080"
+	socksServer, err := socks.New(addr)
 	if err != nil {
 		log.Fatalf("socks5.NewServer %v", err)
 	}
-	info("Socks5 server started.")
+	info("Socks5 server %s started.", addr)
 	inBytes := 0
 	outBytes := 0
 	go func() {
