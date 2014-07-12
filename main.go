@@ -34,9 +34,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-var p = fmt.Printf
+	socks "github.com/reusee/socks5-server"
+)
 
 const (
 	MTU = 1024
@@ -69,21 +69,25 @@ func main() {
 		log.Fatal("new_tun")
 	}
 	name := C.GoString(cName)
-	p("fd %d dev %s\n", fd, name)
+	info("fd %d dev %s", fd, name)
 
 	// set ip
 	run("ip", "link", "set", name, "up")
-	ip := "10.10.10.1"
+	ip := "192.168.168.1"
 	if isLocal {
-		ip = "10.10.10.2"
+		ip = "192.168.168.2"
 	}
 	run("ip", "addr", "add", ip+"/24", "dev", name)
 	run("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(MTU))
 
+	// socks server
+	if !isLocal {
+		go startSocksServer(ip)
+	}
+
 	// vars
 	file := os.NewFile(uintptr(fd), name)
 	remotes := make(map[string]*net.UDPAddr)
-	start := time.Now()
 
 	// read from udp
 	addr, err := net.ResolveUDPAddr("udp", listenPort)
@@ -99,20 +103,15 @@ func main() {
 		var count int
 		var err error
 		var remoteAddr *net.UDPAddr
-		fmt.Printf("listening %v\n", addr)
+		info("listening %v", addr)
 		for {
 			count, remoteAddr, err = conn.ReadFromUDP(buffer)
-			fmt.Printf("%v read from udp %v %v\n",
-				time.Now().Sub(start),
-				remoteAddr,
-				count)
 			if err != nil {
 				break
 			}
 			if remotes[remoteAddr.String()] == nil {
 				remotes[remoteAddr.String()] = remoteAddr
 			}
-			fmt.Printf("write to tun %d\n", count)
 			file.Write(buffer[:count])
 		}
 	}()
@@ -131,20 +130,17 @@ func main() {
 	var count int
 	for {
 		count, err = file.Read(buffer)
-		fmt.Printf("%v read from tun %v\n",
-			time.Now().Sub(start),
-			count)
 		if err != nil {
 			break
 		}
 		for _, remoteAddr := range remotes {
-			fmt.Printf("write to %v\n", remoteAddr)
 			conn.WriteToUDP(buffer[:count], remoteAddr)
 		}
 	}
 
 }
 
+// run command
 func run(cmd string, args ...string) {
 	out, err := exec.Command(cmd, args...).Output()
 	if err != nil {
@@ -153,4 +149,85 @@ func run(cmd string, args ...string) {
 			strings.Join(args, " "),
 			out)
 	}
+}
+
+// info
+func info(format string, args ...interface{}) {
+	now := time.Now()
+	fmt.Printf("%02d:%02d:%02d %s\n", now.Hour(), now.Minute(), now.Second(),
+		fmt.Sprintf(format, args...))
+}
+
+func startSocksServer(ip string) {
+	// start socks server
+	socksServer, err := socks.New(ip + ":1080")
+	if err != nil {
+		log.Fatalf("socks5.NewServer %v", err)
+	}
+	info("Socks5 server started.")
+	inBytes := 0
+	outBytes := 0
+	go func() {
+		for _ = range time.NewTicker(time.Second * 8).C {
+			info("socks in %s out %s", formatBytes(inBytes), formatBytes(outBytes))
+		}
+	}()
+
+	// handle socks client
+	socksServer.OnSignal("client", func(args ...interface{}) {
+		go func() {
+			socksClientConn := args[0].(net.Conn)
+			defer socksClientConn.Close()
+			hostPort := args[1].(string)
+			// dial to target addr
+			conn, err := net.DialTimeout("tcp", hostPort, time.Second*32)
+			if err != nil {
+				info("dial error %v", err)
+				return
+			}
+			defer conn.Close()
+			// read from target
+			go func() {
+				for {
+					buf := make([]byte, 2048)
+					n, err := conn.Read(buf)
+					buf = buf[:n]
+					inBytes += n
+					socksClientConn.Write(buf)
+					if err != nil {
+						return
+					}
+				}
+			}()
+			// read from socks client
+			for {
+				buf := make([]byte, 2048)
+				n, err := socksClientConn.Read(buf)
+				buf = buf[:n]
+				outBytes += n
+				conn.Write(buf)
+				if err != nil {
+					return
+				}
+			}
+		}()
+	})
+}
+
+func formatBytes(n int) string {
+	units := "bKMGTP"
+	i := 0
+	result := ""
+	for n > 0 {
+		res := n % 1024
+		if res > 0 {
+			result = fmt.Sprintf("%d%c", res, units[i]) + result
+		}
+		n /= 1024
+		i++
+	}
+	if result == "" {
+		return "0"
+	}
+	return result
 }
