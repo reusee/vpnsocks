@@ -112,6 +112,9 @@ func main() {
 			if remotes[remoteAddr.String()] == nil {
 				remotes[remoteAddr.String()] = remoteAddr
 			}
+			for i, b := range buffer[:count] {
+				buffer[i] = b ^ 0xDE
+			}
 			file.Write(buffer[:count])
 		}
 	}()
@@ -132,6 +135,9 @@ func main() {
 		count, err = file.Read(buffer)
 		if err != nil {
 			break
+		}
+		for i, b := range buffer[:count] {
+			buffer[i] = b ^ 0xDE
 		}
 		for _, remoteAddr := range remotes {
 			conn.WriteToUDP(buffer[:count], remoteAddr)
@@ -188,24 +194,25 @@ func startSocksServer(ip string) {
 			defer conn.Close()
 			// read from target
 			go func() {
+				buf := make([]byte, 2048)
+				var err error
+				var n int
 				for {
-					buf := make([]byte, 2048)
-					n, err := conn.Read(buf)
-					buf = buf[:n]
+					n, err = conn.Read(buf)
 					inBytes += n
-					socksClientConn.Write(buf)
+					socksClientConn.Write(buf[:n])
 					if err != nil {
 						return
 					}
 				}
 			}()
 			// read from socks client
+			buf := make([]byte, 2048)
+			var n int
 			for {
-				buf := make([]byte, 2048)
-				n, err := socksClientConn.Read(buf)
-				buf = buf[:n]
+				n, err = socksClientConn.Read(buf)
 				outBytes += n
-				conn.Write(buf)
+				conn.Write(buf[:n])
 				if err != nil {
 					return
 				}
