@@ -38,7 +38,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	socks "github.com/reusee/socks5-server"
@@ -141,19 +140,6 @@ func main() {
 		remotes[remoteAddr.String()] = remoteAddr
 	}
 
-	// limit
-	quota := 50 * 1024
-	quotaInterval := time.Millisecond * 50
-	quotaLock := new(sync.Mutex)
-	go func() {
-		for {
-			time.Sleep(quotaInterval)
-			quotaLock.Lock()
-			quota = 50 * 1024
-			quotaLock.Unlock()
-		}
-	}()
-
 	// read from tun
 	buffer := make([]byte, MTU+128)
 	var count int
@@ -166,14 +152,6 @@ func main() {
 			buffer[i] = b ^ 0xDE
 		}
 		for _, remoteAddr := range remotes {
-			quotaLock.Lock()
-			quota -= count
-			if quota < 0 {
-				quotaLock.Unlock()
-				time.Sleep(quotaInterval)
-			} else {
-				quotaLock.Unlock()
-			}
 			// write to udp
 			conn.WriteToUDP(buffer[:count], remoteAddr)
 			conn.WriteToUDP(buffer[:count], remoteAddr)
