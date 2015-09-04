@@ -9,6 +9,7 @@ package main
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 void new_tun(int* fdp, char** namep) {
 	struct ifreq *ifr = (struct ifreq*)malloc(sizeof(struct ifreq));
@@ -24,9 +25,13 @@ void new_tun(int* fdp, char** namep) {
 
 */
 import "C"
+
 import (
+	crand "crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -40,8 +45,14 @@ import (
 )
 
 const (
-	MTU = 1024
+	MTU = 1500
 )
+
+func init() {
+	var seed int64
+	binary.Read(crand.Reader, binary.LittleEndian, &seed)
+	rand.Seed(seed)
+}
 
 func main() {
 	// parse arguments
@@ -80,6 +91,7 @@ func main() {
 	}
 	run("ip", "addr", "add", ip+"/24", "dev", name)
 	run("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(MTU))
+	run("ip", "link", "set", "dev", name, "qlen", "1000")
 
 	// socks server
 	if !isLocal {
@@ -163,7 +175,6 @@ func main() {
 				quotaLock.Unlock()
 			}
 			// write to udp
-			conn.WriteToUDP(buffer[:count], remoteAddr)
 			conn.WriteToUDP(buffer[:count], remoteAddr)
 			conn.WriteToUDP(buffer[:count], remoteAddr)
 		}
