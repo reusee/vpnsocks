@@ -37,7 +37,6 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -131,9 +130,26 @@ func main() {
 	var remoteAddrs atomic.Value
 	remoteAddrs.Store(addrs)
 
+	// sender
+	packets := make(chan []byte)
+	go func() {
+		ticker := time.NewTicker(time.Millisecond * 100)
+		n := 128 * 1024
+		for {
+			select {
+			case bs := <-packets:
+				if n > 0 {
+					file.Write(bs)
+					n -= len(bs)
+				}
+			case <-ticker.C:
+				n = 128 * 1024
+			}
+		}
+	}()
+
 	// listen local ports
 	var localConns []*net.UDPConn
-	var fileLock sync.Mutex
 	for _, port := range config.LocalPorts {
 		addr, err := net.ResolveUDPAddr("udp", sp("%s:%d", config.LocalAddr, port))
 		ce(err, "resolve addr")
@@ -156,9 +172,7 @@ func main() {
 				for i, b := range buffer[:n] { // simple obfuscation
 					buffer[i] = b ^ 0xDE
 				}
-				fileLock.Lock()
-				file.Write(buffer[:n])
-				fileLock.Unlock()
+				packets <- buffer[:n]
 			}
 		}()
 	}
