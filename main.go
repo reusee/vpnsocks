@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -132,6 +133,7 @@ func main() {
 
 	// listen local ports
 	var localConns []*net.UDPConn
+	var fileLock sync.Mutex
 	for _, port := range config.LocalPorts {
 		addr, err := net.ResolveUDPAddr("udp", sp("%s:%d", config.LocalAddr, port))
 		ce(err, "resolve addr")
@@ -154,7 +156,9 @@ func main() {
 				for i, b := range buffer[:n] { // simple obfuscation
 					buffer[i] = b ^ 0xDE
 				}
+				fileLock.Lock()
 				file.Write(buffer[:n])
+				fileLock.Unlock()
 			}
 		}()
 	}
@@ -168,8 +172,15 @@ func main() {
 			buffer[i] = b ^ 0xDE
 		}
 		addrs := remoteAddrs.Load().([]*net.UDPAddr)
+		if len(addrs) == 0 {
+			continue
+		}
 		localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
 			addrs[rand.Intn(len(addrs))])
+		if rand.Intn(100) < 50 {
+			localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
+				addrs[rand.Intn(len(addrs))])
+		}
 	}
 
 }
