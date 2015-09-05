@@ -85,12 +85,16 @@ func main() {
 		return
 	}
 	if config.LocalAddr == "" {
-		config.LocalAddr = "127.0.0.1"
+		config.LocalAddr = "0.0.0.0"
 	}
 	if config.Socks5Port == 0 {
 		config.Socks5Port = 1080
 	}
 	isLocal := len(config.RemotePorts) > 0
+	if isLocal && config.RemoteAddr == "" {
+		fmt.Printf("remote addr must not be empty\n")
+		return
+	}
 
 	// setup tun device
 	var fd C.int
@@ -145,6 +149,7 @@ func main() {
 					copy(newAddrs, addrs)
 					newAddrs = append(newAddrs, remoteAddr)
 					remoteAddrs.Store(newAddrs)
+					info("remote %v added.", remoteAddr)
 				}
 				for i, b := range buffer[:n] { // simple obfuscation
 					buffer[i] = b ^ 0xDE
