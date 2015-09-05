@@ -29,22 +29,27 @@ import "C"
 import (
 	crand "crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
-	"strings"
+	"sync"
 	"time"
 
 	socks "github.com/reusee/socks5-server"
 )
 
 const (
-	MTU = 1500
+	MTU   = 1500
+	PORTS = 8
+)
+
+var (
+	sp = fmt.Sprintf
 )
 
 func init() {
@@ -54,35 +59,46 @@ func init() {
 }
 
 func main() {
-	// parse arguments
-	var isLocal bool
-	var remoteAddrStr string
-	listenPort := ":35555"
-	for _, arg := range os.Args[1:] {
-		if regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(:[0-9]+)?`).MatchString(arg) {
-			remoteAddrStr = arg
-			if !strings.Contains(remoteAddrStr, ":") {
-				remoteAddrStr += ":35555"
-			}
-			isLocal = true
-		} else if regexp.MustCompile(`:[0-9]+`).MatchString(arg) {
-			listenPort = arg
-		} else {
-			log.Fatalf("unknown argument %s", arg)
-		}
+	if len(os.Args) < 2 {
+		fmt.Printf("usage: %s [config file path]", os.Args[0])
+		return
 	}
 
-	// allocate tun
+	// get config
+	var config struct {
+		RemoteAddr  string
+		LocalAddr   string
+		LocalPorts  []int
+		RemotePorts []int
+		Socks5Port  int
+	}
+	configContent, err := ioutil.ReadFile(os.Args[1])
+	ce(err, "read config file")
+	err = json.Unmarshal(configContent, &config)
+	ce(err, "parse config file")
+	if len(config.LocalPorts) != PORTS {
+		ce(nil, sp("must be %d local ports", PORTS))
+	}
+	if len(config.RemotePorts) != 0 || len(config.RemotePorts) != PORTS {
+		ce(nil, sp("must be zero or %d remote ports", PORTS))
+	}
+	if config.LocalAddr == "" {
+		config.LocalAddr = "127.0.0.1"
+	}
+	if config.Socks5Port == 0 {
+		config.Socks5Port = 1080
+	}
+	isLocal := len(config.RemotePorts) > 0
+
+	// setup tun device
 	var fd C.int
 	var cName *C.char
 	C.new_tun(&fd, &cName)
 	if fd == 0 {
-		log.Fatal("new_tun")
+		ce(nil, "allocate tun")
 	}
 	name := C.GoString(cName)
 	info("fd %d dev %s", fd, name)
-
-	// set ip
 	run("ip", "link", "set", name, "up")
 	ip := "192.168.168.1"
 	if isLocal {
@@ -91,84 +107,68 @@ func main() {
 	run("ip", "addr", "add", ip+"/24", "dev", name)
 	run("ip", "link", "set", "dev", name, "mtu", strconv.Itoa(MTU))
 	run("ip", "link", "set", "dev", name, "qlen", "1000")
-
-	// socks server
-	if !isLocal {
-		go startSocksServer(ip)
-	}
-
-	// vars
 	file := os.NewFile(uintptr(fd), name)
-	remotes := make(map[string]*net.UDPAddr)
 
-	// read from udp
-	addr, err := net.ResolveUDPAddr("udp", listenPort)
-	if err != nil {
-		log.Fatal(err)
+	// start socks server
+	if !isLocal {
+		go startSocksServer(sp("%s:%d", ip, config.Socks5Port))
 	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	go func() {
-		buffer := make([]byte, MTU+128)
-		var count int
-		var err error
-		var remoteAddr *net.UDPAddr
-		info("listening %v", addr)
-		for {
-			count, remoteAddr, err = conn.ReadFromUDP(buffer)
-			if err != nil {
-				break
-			}
-			if remotes[remoteAddr.String()] == nil {
-				remotes[remoteAddr.String()] = remoteAddr
-			}
-			for i, b := range buffer[:count] {
-				buffer[i] = b ^ 0xDE
-			}
-			file.Write(buffer[:count])
-		}
-	}()
 
-	// dial to remote
-	if isLocal {
-		remoteAddr, err := net.ResolveUDPAddr("udp", remoteAddrStr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		remotes[remoteAddr.String()] = remoteAddr
+	// setup remote addrs
+	var remoteAddrs []*net.UDPAddr
+	var remoteAddrsLock sync.Mutex
+	for _, port := range config.RemotePorts {
+		addr, err := net.ResolveUDPAddr("udp", sp("%s:%d", config.RemoteAddr, port))
+		ce(err, "resolve addr")
+		remoteAddrs = append(remoteAddrs, addr)
+	}
+
+	// listen local ports
+	var localConns []*net.UDPConn
+	for _, port := range config.LocalPorts {
+		addr, err := net.ResolveUDPAddr("udp", sp("%s:%d", config.LocalAddr, port))
+		ce(err, "resolve addr")
+		conn, err := net.ListenUDP("udp", addr)
+		ce(err, "listen")
+		localConns = append(localConns, conn)
+		go func() {
+			buffer := make([]byte, MTU+128)
+			for {
+				n, remoteAddr, err := conn.ReadFromUDP(buffer)
+				ce(err, "read udp")
+				remoteAddrsLock.Lock()
+				if len(remoteAddrs) < PORTS { // allow remote
+					remoteAddrs = append(remoteAddrs, remoteAddr)
+				}
+				remoteAddrsLock.Unlock()
+				for i, b := range buffer[:n] { // simple obfuscation
+					buffer[i] = b ^ 0xDE
+				}
+				file.Write(buffer[:n])
+			}
+		}()
 	}
 
 	// read from tun
 	buffer := make([]byte, MTU+128)
-	var count int
 	for {
-		count, err = file.Read(buffer)
-		if err != nil {
-			break
-		}
-		for i, b := range buffer[:count] {
+		n, err := file.Read(buffer)
+		ce(err, "read from tun")
+		for i, b := range buffer[:n] {
 			buffer[i] = b ^ 0xDE
 		}
-		for _, remoteAddr := range remotes {
-			// write to udp
-			conn.WriteToUDP(buffer[:count], remoteAddr)
-			conn.WriteToUDP(buffer[:count], remoteAddr)
-		}
+		remoteAddrsLock.Lock()
+		localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
+			remoteAddrs[rand.Intn(len(remoteAddrs))])
+		remoteAddrsLock.Unlock()
 	}
 
 }
 
 // run command
 func run(cmd string, args ...string) {
-	out, err := exec.Command(cmd, args...).Output()
-	if err != nil {
-		log.Fatalf("error on running command %s %s\n>> %s <<",
-			cmd,
-			strings.Join(args, " "),
-			out)
-	}
+	_, err := exec.Command(cmd, args...).Output()
+	ce(err, "run command")
 }
 
 // info
@@ -178,13 +178,10 @@ func info(format string, args ...interface{}) {
 		fmt.Sprintf(format, args...))
 }
 
-func startSocksServer(ip string) {
+func startSocksServer(addr string) {
 	// start socks server
-	addr := ip + ":1080"
 	socksServer, err := socks.New(addr)
-	if err != nil {
-		log.Fatalf("socks5.NewServer %v", err)
-	}
+	ce(err, "new socks5 server")
 	info("Socks5 server %s started.", addr)
 	inBytes := 0
 	outBytes := 0
