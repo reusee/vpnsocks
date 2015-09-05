@@ -77,10 +77,12 @@ func main() {
 	err = json.Unmarshal(configContent, &config)
 	ce(err, "parse config file")
 	if len(config.LocalPorts) != PORTS {
-		ce(nil, sp("must be %d local ports", PORTS))
+		fmt.Printf("must be %d local ports", PORTS)
+		return
 	}
-	if len(config.RemotePorts) != 0 || len(config.RemotePorts) != PORTS {
-		ce(nil, sp("must be zero or %d remote ports", PORTS))
+	if len(config.RemotePorts) != 0 && len(config.RemotePorts) != PORTS {
+		fmt.Printf("must be zero or %d remote ports", PORTS)
+		return
 	}
 	if config.LocalAddr == "" {
 		config.LocalAddr = "127.0.0.1"
@@ -95,7 +97,7 @@ func main() {
 	var cName *C.char
 	C.new_tun(&fd, &cName)
 	if fd == 0 {
-		ce(nil, "allocate tun")
+		panic("allocate tun")
 	}
 	name := C.GoString(cName)
 	info("fd %d dev %s", fd, name)
