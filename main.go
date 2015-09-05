@@ -37,7 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	socks "github.com/reusee/socks5-server"
@@ -115,13 +115,14 @@ func main() {
 	}
 
 	// setup remote addrs
-	var remoteAddrs []*net.UDPAddr
-	var remoteAddrsLock sync.Mutex
+	var addrs []*net.UDPAddr
 	for _, port := range config.RemotePorts {
 		addr, err := net.ResolveUDPAddr("udp", sp("%s:%d", config.RemoteAddr, port))
 		ce(err, "resolve addr")
-		remoteAddrs = append(remoteAddrs, addr)
+		addrs = append(addrs, addr)
 	}
+	var remoteAddrs atomic.Value
+	remoteAddrs.Store(addrs)
 
 	// listen local ports
 	var localConns []*net.UDPConn
@@ -136,11 +137,13 @@ func main() {
 			for {
 				n, remoteAddr, err := conn.ReadFromUDP(buffer)
 				ce(err, "read udp")
-				remoteAddrsLock.Lock()
-				if len(remoteAddrs) < PORTS { // allow remote
-					remoteAddrs = append(remoteAddrs, remoteAddr)
+				addrs := remoteAddrs.Load().([]*net.UDPAddr)
+				if len(addrs) < PORTS { // allow remote
+					newAddrs := make([]*net.UDPAddr, len(addrs))
+					copy(newAddrs, addrs)
+					newAddrs = append(newAddrs, remoteAddr)
+					remoteAddrs.Store(newAddrs)
 				}
-				remoteAddrsLock.Unlock()
 				for i, b := range buffer[:n] { // simple obfuscation
 					buffer[i] = b ^ 0xDE
 				}
@@ -157,10 +160,9 @@ func main() {
 		for i, b := range buffer[:n] {
 			buffer[i] = b ^ 0xDE
 		}
-		remoteAddrsLock.Lock()
+		addrs := remoteAddrs.Load().([]*net.UDPAddr)
 		localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
-			remoteAddrs[rand.Intn(len(remoteAddrs))])
-		remoteAddrsLock.Unlock()
+			addrs[rand.Intn(len(addrs))])
 	}
 
 }
