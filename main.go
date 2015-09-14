@@ -50,6 +50,7 @@ const (
 
 var (
 	sp = fmt.Sprintf
+	pt = fmt.Printf
 )
 
 func init() {
@@ -59,8 +60,8 @@ func init() {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Printf("usage: %s [config file path]", os.Args[0])
+	if len(os.Args) < 3 {
+		pt("usage: %s [config file path] [key file path]\n", os.Args[0])
 		return
 	}
 
@@ -77,11 +78,11 @@ func main() {
 	err = json.Unmarshal(configContent, &config)
 	ce(err, "parse config file")
 	if len(config.LocalPorts) != PORTS {
-		fmt.Printf("must be %d local ports", PORTS)
+		pt("must be %d local ports\n", PORTS)
 		return
 	}
 	if len(config.RemotePorts) != 0 && len(config.RemotePorts) != PORTS {
-		fmt.Printf("must be zero or %d remote ports", PORTS)
+		pt("must be zero or %d remote ports\n", PORTS)
 		return
 	}
 	if config.LocalAddr == "" {
@@ -92,7 +93,15 @@ func main() {
 	}
 	isLocal := len(config.RemotePorts) > 0
 	if isLocal && config.RemoteAddr == "" {
-		fmt.Printf("remote addr must not be empty\n")
+		pt("remote addr must not be empty\n")
+		return
+	}
+
+	// read key file
+	key, err := ioutil.ReadFile(os.Args[2])
+	ce(err, "read key file")
+	if len(key) != 65536 {
+		pt("invalid key file\n")
 		return
 	}
 
@@ -139,8 +148,10 @@ func main() {
 			select {
 			case bs := <-packets:
 				if n > 0 {
-					file.Write(bs)
+					_, err := file.Write(bs)
+					ce(err, "write to tun")
 					n -= len(bs)
+				} else {
 				}
 			case <-ticker.C:
 				n = 128 * 1024
@@ -169,8 +180,14 @@ func main() {
 					remoteAddrs.Store(newAddrs)
 					info("remote %v added.", remoteAddr)
 				}
+				keyIndex := n
+				var lastByte byte
 				for i, b := range buffer[:n] { // simple obfuscation
-					buffer[i] = b ^ 0xDE
+					keyIndex += i + int(lastByte)
+					keyIndex %= 65536
+					b = b ^ key[keyIndex]
+					lastByte = buffer[i]
+					buffer[i] = b
 				}
 				packets <- buffer[:n]
 			}
@@ -182,8 +199,14 @@ func main() {
 	for {
 		n, err := file.Read(buffer)
 		ce(err, "read from tun")
+		keyIndex := n
+		var lastByte byte
 		for i, b := range buffer[:n] {
-			buffer[i] = b ^ 0xDE
+			keyIndex += i + int(lastByte)
+			keyIndex %= 65536
+			b = b ^ key[keyIndex]
+			lastByte = b
+			buffer[i] = b
 		}
 		addrs := remoteAddrs.Load().([]*net.UDPAddr)
 		if len(addrs) == 0 {
@@ -208,8 +231,8 @@ func run(cmd string, args ...string) {
 // info
 func info(format string, args ...interface{}) {
 	now := time.Now()
-	fmt.Printf("%02d:%02d:%02d %s\n", now.Hour(), now.Minute(), now.Second(),
-		fmt.Sprintf(format, args...))
+	pt("%02d:%02d:%02d %s\n", now.Hour(), now.Minute(), now.Second(),
+		sp(format, args...))
 }
 
 func startSocksServer(addr string) {
@@ -274,7 +297,7 @@ func formatBytes(n int) string {
 	for n > 0 {
 		res := n % 1024
 		if res > 0 {
-			result = fmt.Sprintf("%d%c", res, units[i]) + result
+			result = sp("%d%c", res, units[i]) + result
 		}
 		n /= 1024
 		i++
