@@ -142,20 +142,26 @@ func main() {
 	// sender
 	packets := make(chan []byte)
 	go func() {
-		ticker := time.NewTicker(time.Millisecond * 100)
-		n := 128 * 1024
-		for {
-			select {
-			case bs := <-packets:
-				if n > 0 {
-					_, err := file.Write(bs)
-					ce(err, "write to tun")
-					n -= len(bs)
-				} else {
+		/*
+			ticker := time.NewTicker(time.Millisecond * 100)
+			n := 12800 * 1024
+			for {
+				select {
+				case bs := <-packets:
+					if n > 0 {
+						_, err := file.Write(bs)
+						ce(err, "write to tun")
+						n -= len(bs)
+					} else {
+					}
+				case <-ticker.C:
+					n = 128 * 1024
 				}
-			case <-ticker.C:
-				n = 128 * 1024
 			}
+		*/
+		for bs := range packets {
+			_, err := file.Write(bs)
+			ce(err, "write to tun")
 		}
 	}()
 
@@ -214,10 +220,10 @@ func main() {
 		}
 		localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
 			addrs[rand.Intn(len(addrs))])
-		if rand.Intn(100) < 50 {
-			localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
-				addrs[rand.Intn(len(addrs))])
-		}
+		//if rand.Intn(100) < 50 {
+		//	localConns[rand.Intn(len(localConns))].WriteToUDP(buffer[:n],
+		//		addrs[rand.Intn(len(addrs))])
+		//}
 	}
 
 }
